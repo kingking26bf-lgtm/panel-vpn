@@ -211,10 +211,17 @@ function requireAdmin(req, res, next) {
 // BOUTIQUE CLIENT
 app.get("/", (req, res) => {
   const products = Object.entries(PRODUCTS).map(([name, price]) => `
-    <div class="card">
+    <article class="product">
+      <div class="product-icon">🌐</div>
+      <span class="tag">OFFRE VPN</span>
       <h3>${esc(name)}</h3>
-      <p class="price">${money(price)}</p>
-    </div>
+      <p class="muted">Configuration VPN disponible</p>
+      <div class="price">${money(price)}</div>
+      <button type="button" class="buy"
+        onclick="document.getElementById('product').value=${JSON.stringify(name)};document.getElementById('commande').scrollIntoView({behavior:'smooth'})">
+        Choisir cette offre →
+      </button>
+    </article>
   `).join("");
 
   const options = Object.entries(PRODUCTS).map(([name]) =>
@@ -225,40 +232,122 @@ app.get("/", (req, res) => {
     `<option value="${days}">${days} jours</option>`
   ).join("");
 
-  res.send(layout("Boutique", `
-    <section class="hero">
-      <h2>🌐 Bienvenue sur notre boutique VPN</h2>
-      <p>Choisis ton service et envoie ta demande de commande.</p>
-    </section>
+  res.send(layout("Boutique VPN", `
+    <style>
+      .store{max-width:1100px;margin:auto;color:#183153}
+      .hero-store{
+        padding:38px 28px;border-radius:22px;color:white;
+        background:linear-gradient(125deg,#0755cc,#2695ff);
+        box-shadow:0 12px 30px #1769d522
+      }
+      .hero-store .eyebrow{
+        font-size:12px;font-weight:800;letter-spacing:2px
+      }
+      .hero-store h2{
+        font-size:clamp(29px,5vw,43px);line-height:1.15;
+        margin:14px 0
+      }
+      .hero-store p{line-height:1.7;max-width:580px}
+      .hero-store a{
+        display:inline-block;background:white;color:#0755cc;
+        padding:13px 18px;border-radius:10px;
+        font-weight:bold;text-decoration:none;margin-top:10px
+      }
+      .section-title{margin:30px 0 8px}
+      .muted{color:#72829a}
+      .product-grid{
+        display:grid;
+        grid-template-columns:repeat(auto-fit,minmax(min(100%,220px),1fr));
+        gap:18px;margin:20px 0 30px
+      }
+      .product{
+        padding:22px;background:white;border:1px solid #e0eafa;
+        border-radius:18px;box-shadow:0 6px 22px #1831530b;
+        min-width:0
+      }
+      .product-icon{
+        display:grid;place-items:center;width:48px;height:48px;
+        background:#eaf3ff;border-radius:14px;font-size:25px;
+        margin-bottom:15px
+      }
+      .tag{font-size:10px;letter-spacing:1px;color:#1268db;font-weight:800}
+      .product h3{overflow-wrap:anywhere;margin:10px 0}
+      .price{font-size:25px;font-weight:850;color:#075bd1;margin:20px 0}
+      .buy,.submit{
+        border:0;border-radius:10px;padding:13px 16px;
+        background:#0868e8;color:white;font-weight:800;cursor:pointer
+      }
+      .buy{width:100%}
+      .buy:hover,.submit:hover{background:#0755bd}
+      .order-panel{
+        background:white;border:1px solid #e0eafa;
+        border-radius:18px;padding:24px;margin-bottom:25px
+      }
+      .order-grid{
+        display:grid;grid-template-columns:repeat(2,minmax(0,1fr));
+        gap:17px
+      }
+      .order-panel label{font-size:13px;font-weight:700}
+      .order-panel input,.order-panel select{
+        box-sizing:border-box;width:100%;min-width:0;
+        padding:12px;border:1px solid #d5e0ef;
+        border-radius:9px;background:white;color:#183153;margin-top:7px
+      }
+      .note{font-size:12px;line-height:1.6;color:#72829a}
+      @media(max-width:520px){
+        .hero-store{padding:25px 19px;border-radius:16px}
+        .order-grid{grid-template-columns:1fr}
+        .order-panel{padding:18px}
+        .product{padding:19px}
+      }
+    </style>
 
-    <h2 style="margin-top:24px">Nos offres</h2>
-    <div class="grid">${products}</div>
+    <main class="store">
+      <section class="hero-store">
+        <div class="eyebrow">PANEL VPN · BOUTIQUE</div>
+        <h2>Bienvenue dans<br>ta boutique VPN.</h2>
+        <p>Découvre nos offres, choisis ta durée et envoie
+        ta demande de commande simplement depuis ton téléphone
+        ou ton ordinateur.</p>
+        <a href="#offres">Découvrir les offres ↓</a>
+      </section>
 
-    <section class="card">
-      <h2>📝 Commander un abonnement</h2>
-      <form method="POST" action="/order">
-        <div class="form-grid">
-          <div>
-            <label for="name">Nom du client</label>
-            <input id="name" name="name" required maxlength="80" placeholder="Ton nom">
+      <section id="offres">
+        <h2 class="section-title">Nos offres</h2>
+        <p class="muted">Choisis l'offre qui te convient.</p>
+        <div class="product-grid">${products}</div>
+      </section>
+
+      <section id="commande" class="order-panel">
+        <h2>🛒 Commander une offre</h2>
+        <p class="muted">Remplis les informations demandées.</p>
+        <form method="POST" action="/order">
+          <div class="order-grid">
+            <div>
+              <label for="name">Nom du client</label>
+              <input id="name" name="name" required maxlength="80"
+                placeholder="Ton nom">
+            </div>
+            <div>
+              <label for="phone">Téléphone</label>
+              <input id="phone" name="phone" required maxlength="30"
+                placeholder="Numéro de téléphone">
+            </div>
+            <div>
+              <label for="product">Offre choisie</label>
+              <select id="product" name="product" required>${options}</select>
+            </div>
+            <div>
+              <label for="duration">Durée souhaitée</label>
+              <select id="duration" name="duration" required>${durations}</select>
+            </div>
           </div>
-          <div>
-            <label for="phone">Téléphone</label>
-            <input id="phone" name="phone" required maxlength="30" placeholder="Numéro de téléphone">
-          </div>
-          <div>
-            <label for="product">Service VPN</label>
-            <select id="product" name="product" required>${options}</select>
-          </div>
-          <div>
-            <label for="duration">Durée</label>
-            <select id="duration" name="duration" required>${durations}</select>
-          </div>
-        </div>
-        <p><button type="submit">Envoyer ma commande</button></p>
-        <small>La commande sera enregistrée. Le paiement et l'activation restent à confirmer par l'administrateur.</small>
-      </form>
-    </section>
+          <p><button class="submit" type="submit">Envoyer ma commande →</button></p>
+          <p class="note">La commande doit être confirmée par l'administrateur.
+          L'envoi du formulaire ne confirme pas le paiement ni l'activation.</p>
+        </form>
+      </section>
+    </main>
   `));
 });
 
