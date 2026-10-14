@@ -2,6 +2,7 @@ const express = require("express");
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
+const { createClient } = require("@supabase/supabase-js");
 
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;
@@ -15,6 +16,22 @@ const PRODUCTS = {
   "NPV Tunnel": 1000,
   "HTTP Custom": 1000,
   "HTTP Injector": 1000
+};
+
+const supabaseUrl = process.env.SUPABASE_URL;
+const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+const supabase = supabaseUrl && supabaseKey
+  ? createClient(supabaseUrl, supabaseKey, {
+      auth: { persistSession: false, autoRefreshToken: false }
+    })
+  : null;
+
+const PRODUCT_FILES = {
+  "V2Ray / VLESS": "vip-1+month - Vless.dark",
+  "Dark Tunnel": "one month.dark",
+  "NPV Tunnel": "npv.npvs",
+  "HTTP Custom": "custom.hc",
+  "HTTP Injector": "inject.ehi"
 };
 
 const STATUSES = [
@@ -376,8 +393,11 @@ app.post("/order", (req, res) => {
     return res.status(500).send("Impossible de lire les commandes existantes.");
   }
 
+  const orderId = crypto.randomUUID();
+  const downloadToken = crypto.randomBytes(32).toString("hex");
   orders.push({
-    id: crypto.randomUUID(),
+    id: orderId,
+    downloadTokenHash: crypto.createHash("sha256").update(downloadToken).digest("hex"),
     name,
     phone,
     product,
@@ -404,6 +424,8 @@ app.post("/order", (req, res) => {
       <p>Durée demandée : <strong>${duration} jours</strong></p>
       <p>Montant : <strong>${money(PRODUCTS[product])}</strong></p>
       <p>Statut : <span class="badge pending">En attente de paiement</span></p>
+<p class="muted">Conserve ce lien personnel. Le téléchargement sera disponible après activation.</p>
+<a class="btn" href="/download/${encodeURIComponent(orderId)}?token=${encodeURIComponent(downloadToken)}">Accéder à mon fichier</a>
       <a class="btn" href="/">Retour à la boutique</a>
     </section>
   `));
@@ -670,6 +692,64 @@ app.get("/admin/client", requireAdmin, (req, res) => {
       <p class="muted">L'expiration est calculée à partir de la date d'activation. Chaque nouvelle commande conserve son propre historique.</p>
     </section>
   `));
+});
+
+
+app.get("/download/:id", async (req, res) => {
+  try {
+    if (!supabase) {
+      return res.status(503).send("Téléchargement non configuré.");
+    }
+
+    const id = String(req.params.id || "");
+    const token = String(req.query.token || "");
+    if (!id || !token || token.length > 200) {
+      return res.status(400).send("Lien de téléchargement invalide.");
+    }
+
+    const orders = readOrders();
+    const order = orders.find(o => o.id === id);
+    if (!order || !order.downloadTokenHash) {
+      return res.status(404).send("Commande ou lien introuvable.");
+    }
+
+    const expected = Buffer.from(order.downloadTokenHash, "hex");
+    const actual = crypto.createHash("sha256").update(token).digest();
+    if (expected.length !== actual.length ||
+        !crypto.timingSafeEqual(expected, actual)) {
+      return res.status(403).send("Lien de téléchargement invalide.");
+    }
+
+    if (order.status !== "Accès activé") {
+      return res.status(403).send(
+        "Ton accès n'est pas encore activé. Réessaie après validation de ta commande."
+      );
+    }
+
+    const expiry = Date.parse(order.expiresAt || "");
+    if (!Number.isFinite(expiry) || expiry <= Date.now()) {
+      return res.status(410).send("Ton abonnement a expiré.");
+    }
+
+    const filePath = PRODUCT_FILES[order.product];
+    if (!filePath) {
+      return res.status(500).send("Aucun fichier associé à ce produit.");
+    }
+
+    const { data, error } = await supabase
+      .storage.from("vpn-files")
+      .createSignedUrl(filePath, 300);
+
+    if (error || !data || !data.signedUrl) {
+      console.error("Erreur Supabase :", error);
+      return res.status(502).send("Impossible de préparer le téléchargement.");
+    }
+
+    return res.redirect(data.signedUrl);
+  } catch (error) {
+    console.error("Erreur de téléchargement :", error);
+    return res.status(500).send("Erreur du téléchargement.");
+  }
 });
 
 app.listen(PORT, "0.0.0.0", () => {
