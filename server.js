@@ -758,24 +758,37 @@ app.get("/download/:id", async (req, res) => {
 // ================= AERO TUNNEL : PROFILS ET TOKENS =================
 const AERO_FILE = path.join(__dirname, "aero-data.json");
 
-function readAero() {
-  try {
-    if (!fs.existsSync(AERO_FILE)) return { profiles: [], tokens: [] };
-    const d = JSON.parse(fs.readFileSync(AERO_FILE, "utf8"));
-    return {
-      profiles: Array.isArray(d.profiles) ? d.profiles : [],
-      tokens: Array.isArray(d.tokens) ? d.tokens : []
-    };
-  } catch (e) {
-    console.error("Erreur aero-data.json :", e.message);
-    throw new Error("Impossible de lire les données AERO.");
-  }
+async function readAero() {
+  if (!supabase) throw new Error("Connexion Supabase indisponible.");
+
+  const { data, error } = await supabase
+    .from("aero_store")
+    .select("data")
+    .eq("id", "main")
+    .maybeSingle();
+
+  if (error) throw error;
+
+  const d = data && data.data ? data.data : {};
+  return {
+    profiles: Array.isArray(d.profiles) ? d.profiles : [],
+    tokens: Array.isArray(d.tokens) ? d.tokens : []
+  };
 }
 
-function saveAero(d) {
-  const tmp = AERO_FILE + ".tmp";
-  fs.writeFileSync(tmp, JSON.stringify(d, null, 2), { encoding: "utf8", mode: 0o600 });
-  fs.renameSync(tmp, AERO_FILE);
+async function saveAero(d) {
+  if (!supabase) throw new Error("Connexion Supabase indisponible.");
+
+  const { error } = await supabase.from("aero_store").upsert({
+    id: "main",
+    data: {
+      profiles: Array.isArray(d.profiles) ? d.profiles : [],
+      tokens: Array.isArray(d.tokens) ? d.tokens : []
+    },
+    updated_at: new Date().toISOString()
+  });
+
+  if (error) throw error;
 }
 
 function aeroProfileType(uri) {
@@ -814,9 +827,9 @@ function aeroDate(value) {
 }
 
 // Administration AERO : profils et tokens
-app.get("/admin/aero", requireAdmin, (req, res) => {
+app.get("/admin/aero", requireAdmin, async (req, res) => {
   let db;
-  try { db = readAero(); }
+  try { db = await readAero(); }
   catch (_) { return res.status(500).send("Erreur de lecture des données AERO."); }
 
   const profileRows = db.profiles.map(p => `
@@ -1063,7 +1076,7 @@ parseLink();
 });
 
 // Ajouter un profil
-app.post("/admin/aero/profile", requireAdmin, (req, res) => {
+app.post("/admin/aero/profile", requireAdmin, async (req, res) => {
   const name = String(req.body.name || "").trim().slice(0, 80);
   const uri = String(req.body.uri || "").trim();
   if (!name || !uri || uri.length > 10000) {
@@ -1074,7 +1087,7 @@ app.post("/admin/aero/profile", requireAdmin, (req, res) => {
   catch (e) { return res.status(400).send(esc(e.message)); }
 
   try {
-    const db = readAero();
+    const db = await readAero();
     const profileId = String(req.body.profileId || "").trim();
 
     if (profileId) {
@@ -1094,7 +1107,7 @@ app.post("/admin/aero/profile", requireAdmin, (req, res) => {
       });
     }
 
-    saveAero(db);
+    await saveAero(db);
     res.redirect("/admin/aero");
   } catch (e) {
     console.error(e);
@@ -1103,9 +1116,9 @@ app.post("/admin/aero/profile", requireAdmin, (req, res) => {
 });
 
 // Générer un token : le code brut est montré une seule fois
-app.post("/admin/aero/token", requireAdmin, (req, res) => {
+app.post("/admin/aero/token", requireAdmin, async (req, res) => {
   try {
-    const db = readAero();
+    const db = await readAero();
     const profile = db.profiles.find(p => p.id === String(req.body.profileId || ""));
     if (!profile) return res.status(400).send("Choisis un profil valide.");
 
@@ -1128,7 +1141,7 @@ app.post("/admin/aero/token", requireAdmin, (req, res) => {
       devices: [],
       revokedAt: null
     });
-    saveAero(db);
+    await saveAero(db);
 
     res.set("Cache-Control", "no-store");
     res.send(layout("Token AERO généré", `
@@ -1149,13 +1162,13 @@ app.post("/admin/aero/token", requireAdmin, (req, res) => {
 });
 
 // Révoquer un token
-app.post("/admin/aero/revoke", requireAdmin, (req, res) => {
+app.post("/admin/aero/revoke", requireAdmin, async (req, res) => {
   try {
-    const db = readAero();
+    const db = await readAero();
     const t = db.tokens.find(x => x.id === String(req.body.id || ""));
     if (!t) return res.status(404).send("Token introuvable.");
     t.revokedAt = new Date().toISOString();
-    saveAero(db);
+    await saveAero(db);
     res.redirect("/admin/aero");
   } catch (e) {
     console.error(e);
@@ -1164,7 +1177,7 @@ app.post("/admin/aero/revoke", requireAdmin, (req, res) => {
 });
 
 // AERO_TOKEN_API_V1 : activation publique de l'application
-app.post("/api/aero/activate", (req, res) => {
+app.post("/api/aero/activate", async (req, res) => {
   res.set("Cache-Control", "no-store");
 
   if (process.env.NODE_ENV === "production" &&
@@ -1180,7 +1193,7 @@ app.post("/api/aero/activate", (req, res) => {
   }
 
   try {
-    const db = readAero();
+    const db = await readAero();
     const tokenHash = aeroHash(token);
     const t = db.tokens.find(x => x.tokenHash === tokenHash);
 
@@ -1199,7 +1212,7 @@ app.post("/api/aero/activate", (req, res) => {
         return res.status(403).json({ ok: false, error: "Limite d'appareils atteinte." });
       }
       t.devices.push(deviceId);
-      saveAero(db);
+      await saveAero(db);
     }
 
     return res.json({
