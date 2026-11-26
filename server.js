@@ -886,8 +886,8 @@ app.get("/admin/aero", requireAdmin, async (req, res) => {
     style="width:100%;min-height:85px"></textarea>
 
   <div id="aeroVlessFields" style="display:none;margin-top:16px">
-    <h3>Éditeur VLESS</h3>
-    <p class="muted">Les champs sont extraits automatiquement du lien. Tu peux les modifier avant l'enregistrement.</p>
+    <h3 id="aeroEditorTitle">Éditeur de profil VPN</h3>
+    <p class="muted">Les paramètres sont extraits automatiquement. Modifie-les puis enregistre.</p>
 
     <label>Adresse du serveur</label>
     <input id="aeroAddress" placeholder="Adresse du serveur">
@@ -895,14 +895,11 @@ app.get("/admin/aero", requireAdmin, async (req, res) => {
     <label>Port</label>
     <input id="aeroPort" type="number" min="1" max="65535" placeholder="443">
 
-    <label>SNI</label>
-    <input id="aeroSni" placeholder="Nom TLS">
+    <label id="aeroCredentialLabel">UUID / Mot de passe</label>
+    <input id="aeroCredential" placeholder="Identifiant ou mot de passe">
 
-    <label>Host WebSocket</label>
-    <input id="aeroWsHost" placeholder="Host HTTP">
-
-    <label>Path</label>
-    <input id="aeroPath" placeholder="/">
+    <label>Flow (VLESS)</label>
+    <input id="aeroFlow" placeholder="xtls-rprx-vision">
 
     <label>Transport</label>
     <select id="aeroNetwork" style="width:100%">
@@ -920,14 +917,30 @@ app.get("/admin/aero", requireAdmin, async (req, res) => {
       <option value="reality">Reality</option>
     </select>
 
+    <label>SNI</label>
+    <input id="aeroSni" placeholder="Nom TLS">
+
+    <label>Host WebSocket / HTTP</label>
+    <input id="aeroWsHost" placeholder="Host">
+
+    <label>Path</label>
+    <input id="aeroPath" placeholder="/">
+
     <label>Fingerprint</label>
     <input id="aeroFingerprint" value="chrome" placeholder="chrome">
 
-    <p class="muted">Les identifiants et les autres paramètres du lien sont conservés.</p>
+    <label>ALPN</label>
+    <input id="aeroAlpn" placeholder="h2,http/1.1">
+
+    <label>Clé publique Reality (pbk)</label>
+    <input id="aeroPublicKey" placeholder="Public key">
+
+    <label>Short ID Reality (sid)</label>
+    <input id="aeroShortId" placeholder="Short ID">
   </div>
 
   <p><button type="submit" id="aeroSaveButton">Enregistrer le profil</button>
-<button type="button" id="aeroNewProfile">Nouveau profil</button></p>
+  <button type="button" id="aeroNewProfile">Nouveau profil</button></p>
 </form>
 
 <script>
@@ -935,118 +948,186 @@ app.get("/admin/aero", requireAdmin, async (req, res) => {
   var form=document.getElementById("aeroEditorForm");
   var uri=document.getElementById("aeroUri");
   var fields=document.getElementById("aeroVlessFields");
-  var ids=["aeroAddress","aeroPort","aeroSni","aeroWsHost","aeroPath","aeroNetwork","aeroSecurity","aeroFingerprint"];
+  var currentScheme="";
 
   function el(id){return document.getElementById(id);}
+  function val(id){return el(id).value.trim();}
+  function set(id,v){el(id).value=v==null?"":String(v);}
+
+  function decodeBase64(s){
+    s=s.replace(/-/g,"+").replace(/_/g,"/");
+    while(s.length%4)s+="=";
+    var binary=atob(s);
+    var bytes=new Uint8Array(binary.length);
+    for(var i=0;i<binary.length;i++)bytes[i]=binary.charCodeAt(i);
+    return new TextDecoder().decode(bytes);
+  }
+
+  function encodeBase64(s){
+    var bytes=new TextEncoder().encode(s);
+    var binary="";
+    bytes.forEach(function(b){binary+=String.fromCharCode(b);});
+    return btoa(binary);
+  }
+
   function parseLink(){
     var raw=uri.value.trim();
     var scheme=raw.split("://")[0].toLowerCase();
-    fields.style.display=scheme==="vless"?"block":"none";
-    if(scheme!=="vless")return;
+    currentScheme=scheme;
+    fields.style.display=["vless","vmess","trojan"].includes(scheme)?"block":"none";
+    if(!fields.style.display || fields.style.display==="none")return;
+
+    el("aeroEditorTitle").textContent="Éditeur "+scheme.toUpperCase();
+    el("aeroCredentialLabel").textContent=scheme==="vless"?"UUID":scheme==="trojan"?"Mot de passe":"UUID VMess";
 
     try{
-      var u=new URL(raw);
-      el("aeroAddress").value=u.hostname||"";
-      el("aeroPort").value=u.port||"443";
-      el("aeroSni").value=u.searchParams.get("sni")||u.searchParams.get("peer")||"";
-      el("aeroWsHost").value=u.searchParams.get("host")||"";
-      el("aeroPath").value=u.searchParams.get("path")||"/";
-      el("aeroNetwork").value=u.searchParams.get("type")||"tcp";
-      el("aeroSecurity").value=u.searchParams.get("security")||"none";
-      el("aeroFingerprint").value=u.searchParams.get("fp")||"chrome";
+      if(scheme==="vmess"){
+        var obj=JSON.parse(decodeBase64(raw.slice(8).split("#")[0]));
+        set("aeroAddress",obj.add);
+        set("aeroPort",obj.port||443);
+        set("aeroCredential",obj.id);
+        set("aeroNetwork",obj.net||"tcp");
+        set("aeroSecurity",obj.security||obj.tls||"none");
+        set("aeroSni",obj.sni||obj.host||"");
+        set("aeroWsHost",obj.host||"");
+        set("aeroPath",obj.path||"/");
+        set("aeroFingerprint",obj.fp||"chrome");
+        set("aeroAlpn",obj.alpn||"");
+        set("aeroPublicKey",obj.pbk||"");
+        set("aeroShortId",obj.sid||"");
+        set("aeroFlow",obj.flow||"");
+      }else{
+        var u=new URL(raw);
+        set("aeroAddress",u.hostname);
+        set("aeroPort",u.port||443);
+        set("aeroCredential",decodeURIComponent(u.username));
+        set("aeroNetwork",u.searchParams.get("type")||"tcp");
+        set("aeroSecurity",u.searchParams.get("security")||(scheme==="trojan"?"tls":"none"));
+        set("aeroSni",u.searchParams.get("sni")||u.searchParams.get("peer")||"");
+        set("aeroWsHost",u.searchParams.get("host")||"");
+        set("aeroPath",u.searchParams.get("path")||"/");
+        set("aeroFingerprint",u.searchParams.get("fp")||"chrome");
+        set("aeroAlpn",u.searchParams.get("alpn")||"");
+        set("aeroPublicKey",u.searchParams.get("pbk")||"");
+        set("aeroShortId",u.searchParams.get("sid")||"");
+        set("aeroFlow",u.searchParams.get("flow")||"");
+      }
     }catch(e){
       fields.style.display="none";
     }
+  }
+
+  function rebuildLink(){
+    var scheme=currentScheme;
+    var address=val("aeroAddress");
+    var port=val("aeroPort");
+    var credential=val("aeroCredential");
+    if(!address||!credential||!port||Number(port)<1||Number(port)>65535){
+      throw new Error("Adresse, port ou identifiant invalide.");
+    }
+
+    if(scheme==="vmess"){
+      var old={};
+      try{old=JSON.parse(decodeBase64(uri.value.trim().slice(8).split("#")[0]));}catch(e){}
+      old.v="2";
+      old.ps=el("aeroName").value.trim();
+      old.add=address;
+      old.port=port;
+      old.id=credential;
+      old.net=val("aeroNetwork");
+      old.tls=val("aeroSecurity")==="tls"?"tls":"";
+      old.security=val("aeroSecurity");
+      old.sni=val("aeroSni");
+      old.host=val("aeroWsHost");
+      old.path=val("aeroPath");
+      old.fp=val("aeroFingerprint");
+      old.alpn=val("aeroAlpn");
+      old.pbk=val("aeroPublicKey");
+      old.sid=val("aeroShortId");
+      old.flow=val("aeroFlow");
+      uri.value="vmess://"+encodeBase64(JSON.stringify(old));
+      return;
+    }
+
+    var u=new URL(uri.value.trim());
+    u.hostname=address;
+    u.port=port;
+    u.username=credential;
+    var params={
+      type:val("aeroNetwork"),
+      security:val("aeroSecurity"),
+      sni:val("aeroSni"),
+      host:val("aeroWsHost"),
+      path:val("aeroPath"),
+      fp:val("aeroFingerprint"),
+      alpn:val("aeroAlpn"),
+      pbk:val("aeroPublicKey"),
+      sid:val("aeroShortId"),
+      flow:val("aeroFlow")
+    };
+    Object.keys(params).forEach(function(k){
+      if(params[k])u.searchParams.set(k,params[k]);
+      else u.searchParams.delete(k);
+    });
+    uri.value=u.toString();
   }
 
   uri.addEventListener("input",parseLink);
   uri.addEventListener("change",parseLink);
 
   form.addEventListener("submit",function(e){
-    var raw=uri.value.trim();
-    if(raw.toLowerCase().indexOf("vless://")!==0)return;
-
+    if(!["vless","vmess","trojan"].includes(currentScheme))return;
     try{
-      var u=new URL(raw);
-      var address=el("aeroAddress").value.trim();
-      var port=el("aeroPort").value.trim();
-
-      if(!address || !port || Number(port)<1 || Number(port)>65535){
-        throw new Error("Adresse serveur ou port invalide.");
-      }
-
-      u.hostname=address;
-      u.port=port;
-
-      var params={
-        sni:el("aeroSni").value.trim(),
-        host:el("aeroWsHost").value.trim(),
-        path:el("aeroPath").value.trim(),
-        type:el("aeroNetwork").value,
-        security:el("aeroSecurity").value,
-        fp:el("aeroFingerprint").value.trim()
-      };
-
-      Object.keys(params).forEach(function(k){
-        if(params[k])u.searchParams.set(k,params[k]);
-        else u.searchParams.delete(k);
-      });
-
-      uri.value=u.toString();
+      rebuildLink();
     }catch(err){
       e.preventDefault();
-      alert(err.message||"Lien VLESS invalide.");
+      alert(err.message||"Profil VPN invalide.");
     }
   });
 
-  
-document.addEventListener("click", function(event){
-  var btn = event.target.closest(".aero-edit-profile");
-  if (!btn) return;
+  document.addEventListener("click",function(event){
+    var btn=event.target.closest(".aero-edit-profile");
+    if(!btn)return;
+    el("aeroProfileId").value=btn.dataset.id||"";
+    el("aeroName").value=btn.dataset.name||"";
+    uri.value=btn.dataset.uri||"";
+    parseLink();
+    el("aeroSaveButton").textContent="Enregistrer les modifications";
+    form.scrollIntoView({behavior:"smooth",block:"start"});
+  });
 
-  el("aeroProfileId").value = btn.dataset.id || "";
-  el("aeroName").value = btn.dataset.name || "";
-  uri.value = btn.dataset.uri || "";
+  document.addEventListener("click",async function(event){
+    var btn=event.target.closest(".aero-copy-profile");
+    if(!btn)return;
+    var link=btn.dataset.uri||"";
+    try{
+      if(navigator.clipboard&&window.isSecureContext){
+        await navigator.clipboard.writeText(link);
+      }else{
+        var area=document.createElement("textarea");
+        area.value=link;
+        document.body.appendChild(area);
+        area.select();
+        var ok=document.execCommand("copy");
+        area.remove();
+        if(!ok)throw new Error("Copie impossible");
+      }
+      var old=btn.textContent;
+      btn.textContent="Lien copié !";
+      setTimeout(function(){btn.textContent=old;},1800);
+    }catch(e){alert("Impossible de copier le lien.");}
+  });
+
+  el("aeroNewProfile").addEventListener("click",function(){
+    el("aeroProfileId").value="";
+    el("aeroName").value="";
+    uri.value="";
+    currentScheme="";
+    fields.style.display="none";
+    el("aeroSaveButton").textContent="Enregistrer le profil";
+  });
+
   parseLink();
-  el("aeroSaveButton").textContent = "Enregistrer les modifications";
-  form.scrollIntoView({behavior:"smooth", block:"start"});
-});
-
-
-document.addEventListener("click", async function(event){
-  var btn = event.target.closest(".aero-copy-profile");
-  if (!btn) return;
-
-  var link = btn.dataset.uri || "";
-  try {
-    if (navigator.clipboard && window.isSecureContext) {
-      await navigator.clipboard.writeText(link);
-    } else {
-      var area = document.createElement("textarea");
-      area.value = link;
-      document.body.appendChild(area);
-      area.select();
-      var ok = document.execCommand("copy");
-      area.remove();
-      if (!ok) throw new Error("Copie impossible");
-    }
-    var old = btn.textContent;
-    btn.textContent = "Lien copié !";
-    setTimeout(function(){ btn.textContent = old; }, 1800);
-  } catch(e) {
-    alert("Impossible de copier le lien.");
-  }
-});
-
-el("aeroNewProfile").addEventListener("click", function(){
-  el("aeroProfileId").value = "";
-  el("aeroName").value = "";
-  uri.value = "";
-  parseLink();
-  el("aeroSaveButton").textContent = "Enregistrer le profil";
-});
-
-parseLink();
 })();
 </script>
 <h2>Générer un token</h2>
