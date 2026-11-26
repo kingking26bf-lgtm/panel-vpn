@@ -9,6 +9,7 @@ const PORT = Number(process.env.PORT) || 3000;
 const DATA_FILE = path.join(__dirname, "orders.json");
 
 app.use(express.urlencoded({ extended: false, limit: "20kb" }));
+app.use(express.json({ limit: "20kb" }));
 
 const PRODUCTS = {
   "V2Ray / VLESS": 1500,
@@ -180,6 +181,7 @@ footer{text-align:center;color:#64748b;padding:24px}
 <a href="/">Boutique</a>
 <a href="/admin">Administration</a>
 <a href="/admin/clients">Gestion des clients</a>
+<a href="/admin/aero">AERO TUNNEL</a>
 </nav>
 </header>
 <main>${content}</main>
@@ -751,6 +753,468 @@ app.get("/download/:id", async (req, res) => {
     return res.status(500).send("Erreur du téléchargement.");
   }
 });
+
+
+// ================= AERO TUNNEL : PROFILS ET TOKENS =================
+const AERO_FILE = path.join(__dirname, "aero-data.json");
+
+function readAero() {
+  try {
+    if (!fs.existsSync(AERO_FILE)) return { profiles: [], tokens: [] };
+    const d = JSON.parse(fs.readFileSync(AERO_FILE, "utf8"));
+    return {
+      profiles: Array.isArray(d.profiles) ? d.profiles : [],
+      tokens: Array.isArray(d.tokens) ? d.tokens : []
+    };
+  } catch (e) {
+    console.error("Erreur aero-data.json :", e.message);
+    throw new Error("Impossible de lire les données AERO.");
+  }
+}
+
+function saveAero(d) {
+  const tmp = AERO_FILE + ".tmp";
+  fs.writeFileSync(tmp, JSON.stringify(d, null, 2), { encoding: "utf8", mode: 0o600 });
+  fs.renameSync(tmp, AERO_FILE);
+}
+
+function aeroProfileType(uri) {
+  const scheme = String(uri || "").split("://")[0].toLowerCase();
+  if (!["vless", "vmess", "trojan"].includes(scheme)) {
+    throw new Error("Seuls VLESS, VMess et Trojan sont acceptés.");
+  }
+  if (scheme === "vmess") {
+    const raw = String(uri).slice(8).split("#")[0];
+    let obj;
+    try {
+      obj = JSON.parse(Buffer.from(raw, "base64").toString("utf8"));
+    } catch (_) {
+      throw new Error("Lien VMess invalide.");
+    }
+    if (!obj.add || !obj.port || !obj.id) throw new Error("Profil VMess incomplet.");
+  } else {
+    let u;
+    try { u = new URL(uri); } catch (_) { throw new Error("Lien VPN invalide."); }
+    if (!u.hostname || !u.username) throw new Error("Lien VPN incomplet.");
+    if (!u.port || Number(u.port) < 1 || Number(u.port) > 65535) {
+      throw new Error("Port VPN invalide.");
+    }
+  }
+  return scheme;
+}
+
+function aeroHash(token) {
+  return crypto.createHash("sha256").update(String(token)).digest("hex");
+}
+
+function aeroDate(value) {
+  if (!value) return "—";
+  const d = new Date(value);
+  return Number.isNaN(d.getTime()) ? "—" : d.toLocaleString("fr-FR");
+}
+
+// Administration AERO : profils et tokens
+app.get("/admin/aero", requireAdmin, (req, res) => {
+  let db;
+  try { db = readAero(); }
+  catch (_) { return res.status(500).send("Erreur de lecture des données AERO."); }
+
+  const profileRows = db.profiles.map(p => `
+    <tr>
+      <td>${esc(p.name)}</td>
+      <td>${esc(p.type.toUpperCase())}</td>
+      <td>${esc(p.createdAt ? aeroDate(p.createdAt) : "—")}</td>
+      <td><button type="button" class="aero-edit-profile"
+        data-id="${esc(p.id)}"
+        data-name="${esc(p.name)}"
+        data-uri="${esc(p.uri)}">Modifier</button>
+        <button type="button" class="aero-copy-profile"
+          data-uri="${esc(p.uri)}">Copier ${esc(p.type.toUpperCase())}</button></td>
+    </tr>`).join("");
+    const tokenRows = db.tokens.slice().reverse().map(t => {
+    const profile = db.profiles.find(p => p.id === t.profileId);
+    const expired = t.expiresAt && Date.now() >= t.expiresAt;
+    const state = t.revokedAt ? "Révoqué" : expired ? "Expiré" : "Actif";
+    return `<tr>
+      <td>${esc(t.id.slice(0, 8))}</td>
+      <td>${esc(profile ? profile.name : "Profil supprimé")}</td>
+      <td>${esc(state)}</td>
+      <td>${esc(aeroDate(t.expiresAt))}</td>
+      <td>${(t.devices || []).length} / ${esc(t.maxDevices)}</td>
+      <td>${t.revokedAt ? "—" : `<form method="POST" action="/admin/aero/revoke">
+        <input type="hidden" name="id" value="${esc(t.id)}">
+        <button type="submit">Révoquer</button>
+      </form>`}</td>
+    </tr>`;
+  }).join("");
+
+  const options = db.profiles.map(p =>
+    `<option value="${esc(p.id)}">${esc(p.name)} (${esc(p.type.toUpperCase())})</option>`
+  ).join("");
+
+  res.set("Cache-Control", "no-store");
+  res.send(layout("AERO TUNNEL", `
+    <h2>🔐 Gestion AERO TUNNEL</h2>
+    <section class="card">
+      <h2>Ajouter un profil VPN</h2>
+<form method="POST" action="/admin/aero/profile" id="aeroEditorForm">
+  <label>Nom du profil</label>
+  <input type="hidden" name="profileId" id="aeroProfileId" value="">
+<input name="name" id="aeroName" maxlength="80" required placeholder="Ex : Serveur Europe">
+
+  <label style="margin-top:12px">Lien VLESS, VMess ou Trojan</label>
+  <textarea name="uri" id="aeroUri" required
+    placeholder="Colle ici ton lien VPN"
+    style="width:100%;min-height:85px"></textarea>
+
+  <div id="aeroVlessFields" style="display:none;margin-top:16px">
+    <h3>Éditeur VLESS</h3>
+    <p class="muted">Les champs sont extraits automatiquement du lien. Tu peux les modifier avant l'enregistrement.</p>
+
+    <label>Adresse du serveur</label>
+    <input id="aeroAddress" placeholder="Adresse du serveur">
+
+    <label>Port</label>
+    <input id="aeroPort" type="number" min="1" max="65535" placeholder="443">
+
+    <label>SNI</label>
+    <input id="aeroSni" placeholder="Nom TLS">
+
+    <label>Host WebSocket</label>
+    <input id="aeroWsHost" placeholder="Host HTTP">
+
+    <label>Path</label>
+    <input id="aeroPath" placeholder="/">
+
+    <label>Transport</label>
+    <select id="aeroNetwork" style="width:100%">
+      <option value="tcp">TCP</option>
+      <option value="ws">WebSocket</option>
+      <option value="grpc">gRPC</option>
+      <option value="httpupgrade">HTTP Upgrade</option>
+      <option value="h2">HTTP/2</option>
+    </select>
+
+    <label>Sécurité</label>
+    <select id="aeroSecurity" style="width:100%">
+      <option value="tls">TLS</option>
+      <option value="none">Aucune</option>
+      <option value="reality">Reality</option>
+    </select>
+
+    <label>Fingerprint</label>
+    <input id="aeroFingerprint" value="chrome" placeholder="chrome">
+
+    <p class="muted">Les identifiants et les autres paramètres du lien sont conservés.</p>
+  </div>
+
+  <p><button type="submit" id="aeroSaveButton">Enregistrer le profil</button>
+<button type="button" id="aeroNewProfile">Nouveau profil</button></p>
+</form>
+
+<script>
+(function(){
+  var form=document.getElementById("aeroEditorForm");
+  var uri=document.getElementById("aeroUri");
+  var fields=document.getElementById("aeroVlessFields");
+  var ids=["aeroAddress","aeroPort","aeroSni","aeroWsHost","aeroPath","aeroNetwork","aeroSecurity","aeroFingerprint"];
+
+  function el(id){return document.getElementById(id);}
+  function parseLink(){
+    var raw=uri.value.trim();
+    var scheme=raw.split("://")[0].toLowerCase();
+    fields.style.display=scheme==="vless"?"block":"none";
+    if(scheme!=="vless")return;
+
+    try{
+      var u=new URL(raw);
+      el("aeroAddress").value=u.hostname||"";
+      el("aeroPort").value=u.port||"443";
+      el("aeroSni").value=u.searchParams.get("sni")||u.searchParams.get("peer")||"";
+      el("aeroWsHost").value=u.searchParams.get("host")||"";
+      el("aeroPath").value=u.searchParams.get("path")||"/";
+      el("aeroNetwork").value=u.searchParams.get("type")||"tcp";
+      el("aeroSecurity").value=u.searchParams.get("security")||"none";
+      el("aeroFingerprint").value=u.searchParams.get("fp")||"chrome";
+    }catch(e){
+      fields.style.display="none";
+    }
+  }
+
+  uri.addEventListener("input",parseLink);
+  uri.addEventListener("change",parseLink);
+
+  form.addEventListener("submit",function(e){
+    var raw=uri.value.trim();
+    if(raw.toLowerCase().indexOf("vless://")!==0)return;
+
+    try{
+      var u=new URL(raw);
+      var address=el("aeroAddress").value.trim();
+      var port=el("aeroPort").value.trim();
+
+      if(!address || !port || Number(port)<1 || Number(port)>65535){
+        throw new Error("Adresse serveur ou port invalide.");
+      }
+
+      u.hostname=address;
+      u.port=port;
+
+      var params={
+        sni:el("aeroSni").value.trim(),
+        host:el("aeroWsHost").value.trim(),
+        path:el("aeroPath").value.trim(),
+        type:el("aeroNetwork").value,
+        security:el("aeroSecurity").value,
+        fp:el("aeroFingerprint").value.trim()
+      };
+
+      Object.keys(params).forEach(function(k){
+        if(params[k])u.searchParams.set(k,params[k]);
+        else u.searchParams.delete(k);
+      });
+
+      uri.value=u.toString();
+    }catch(err){
+      e.preventDefault();
+      alert(err.message||"Lien VLESS invalide.");
+    }
+  });
+
+  
+document.querySelectorAll(".aero-edit-profile").forEach(function(btn){
+  btn.addEventListener("click", function(){
+    el("aeroProfileId").value = btn.dataset.id || "";
+    el("aeroName").value = btn.dataset.name || "";
+    uri.value = btn.dataset.uri || "";
+    parseLink();
+    el("aeroSaveButton").textContent = "Enregistrer les modifications";
+    form.scrollIntoView({behavior:"smooth", block:"start"});
+  });
+});
+
+
+document.querySelectorAll(".aero-copy-profile").forEach(function(btn){
+  btn.addEventListener("click", async function(){
+    var link = btn.dataset.uri || "";
+    try {
+      if(navigator.clipboard && window.isSecureContext){
+        await navigator.clipboard.writeText(link);
+      } else {
+        var area=document.createElement("textarea");
+        area.value=link;
+        document.body.appendChild(area);
+        area.select();
+        var ok=document.execCommand("copy");
+        area.remove();
+        if(!ok) throw new Error("Copie impossible");
+      }
+      var old=btn.textContent;
+      btn.textContent="Lien copié !";
+      setTimeout(function(){btn.textContent=old;},1800);
+    } catch(e) {
+      alert("Impossible de copier le lien.");
+    }
+  });
+});
+
+el("aeroNewProfile").addEventListener("click", function(){
+  el("aeroProfileId").value = "";
+  el("aeroName").value = "";
+  uri.value = "";
+  parseLink();
+  el("aeroSaveButton").textContent = "Enregistrer le profil";
+});
+
+parseLink();
+})();
+</script>
+<h2>Générer un token</h2>
+      <form method="POST" action="/admin/aero/token">
+        <label>Profil à attribuer</label>
+        <select name="profileId" required style="width:100%">
+          <option value="">Choisir un profil</option>${options}
+        </select>
+        <div class="form-grid" style="margin-top:12px">
+          <div><label>Durée en jours</label>
+            <input name="days" type="number" min="1" max="3650" value="30" required></div>
+          <div><label>Nombre maximal d'appareils</label>
+            <input name="maxDevices" type="number" min="1" max="20" value="1" required></div>
+        </div>
+        <p><button type="submit">Générer le token</button></p>
+      </form>
+    </section>
+    <section class="card">
+      <h2>Profils enregistrés (${db.profiles.length})</h2>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Nom</th><th>Type</th><th>Création</th><th>Action</th></tr></thead>
+        <tbody>${profileRows || '<tr><td colspan="4">Aucun profil.</td></tr>'}</tbody>
+      </table></div>
+    </section>
+    <section class="card">
+      <h2>Tokens générés (${db.tokens.length})</h2>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Identifiant</th><th>Profil</th><th>État</th><th>Expiration</th><th>Appareils</th><th>Action</th></tr></thead>
+        <tbody>${tokenRows || '<tr><td colspan="6">Aucun token.</td></tr>'}</tbody>
+      </table></div>
+      <p class="muted">Le code secret complet n'est jamais affiché dans cette liste.</p>
+    </section>
+  `));
+});
+
+// Ajouter un profil
+app.post("/admin/aero/profile", requireAdmin, (req, res) => {
+  const name = String(req.body.name || "").trim().slice(0, 80);
+  const uri = String(req.body.uri || "").trim();
+  if (!name || !uri || uri.length > 10000) {
+    return res.status(400).send("Nom ou lien invalide.");
+  }
+  let type;
+  try { type = aeroProfileType(uri); }
+  catch (e) { return res.status(400).send(esc(e.message)); }
+
+  try {
+    const db = readAero();
+    const profileId = String(req.body.profileId || "").trim();
+
+    if (profileId) {
+      const existing = db.profiles.find(p => p.id === profileId);
+      if (!existing) {
+        return res.status(404).send("Profil introuvable.");
+      }
+      existing.name = name;
+      existing.type = type;
+      existing.uri = uri;
+      existing.updatedAt = new Date().toISOString();
+    } else {
+      db.profiles.push({
+        id: crypto.randomUUID(),
+        name, type, uri,
+        createdAt: new Date().toISOString()
+      });
+    }
+
+    saveAero(db);
+    res.redirect("/admin/aero");
+  } catch (e) {
+    console.error(e);
+    res.status(500).send("Impossible d'enregistrer le profil.");
+  }
+});
+
+// Générer un token : le code brut est montré une seule fois
+app.post("/admin/aero/token", requireAdmin, (req, res) => {
+  try {
+    const db = readAero();
+    const profile = db.profiles.find(p => p.id === String(req.body.profileId || ""));
+    if (!profile) return res.status(400).send("Choisis un profil valide.");
+
+    const days = Number(req.body.days);
+    const maxDevices = Number(req.body.maxDevices);
+    if (!Number.isInteger(days) || days < 1 || days > 3650 ||
+        !Number.isInteger(maxDevices) || maxDevices < 1 || maxDevices > 20) {
+      return res.status(400).send("Durée ou limite d'appareils invalide.");
+    }
+
+    const rawToken = crypto.randomBytes(24).toString("hex").toUpperCase();
+    const expiresAt = Date.now() + days * 86400000;
+    db.tokens.push({
+      id: crypto.randomUUID(),
+      tokenHash: aeroHash(rawToken),
+      profileId: profile.id,
+      createdAt: new Date().toISOString(),
+      expiresAt,
+      maxDevices,
+      devices: [],
+      revokedAt: null
+    });
+    saveAero(db);
+
+    res.set("Cache-Control", "no-store");
+    res.send(layout("Token AERO généré", `
+      <section class="card">
+        <h2>✅ Token généré</h2>
+        <p>Profil : <strong>${esc(profile.name)}</strong></p>
+        <p>Durée : ${days} jours · Appareils autorisés : ${maxDevices}</p>
+        <p>Copie ce code maintenant. Il ne sera plus affiché ensuite.</p>
+        <input id="aeroToken" readonly value="${esc(rawToken)}" style="font-weight:bold">
+        <button type="button" onclick="navigator.clipboard.writeText(document.getElementById('aeroToken').value)">Copier le token</button>
+        <p><a class="btn secondary" href="/admin/aero">Retour à AERO TUNNEL</a></p>
+      </section>
+    `));
+  } catch (e) {
+    console.error(e);
+    res.status(500).send("Impossible de générer le token.");
+  }
+});
+
+// Révoquer un token
+app.post("/admin/aero/revoke", requireAdmin, (req, res) => {
+  try {
+    const db = readAero();
+    const t = db.tokens.find(x => x.id === String(req.body.id || ""));
+    if (!t) return res.status(404).send("Token introuvable.");
+    t.revokedAt = new Date().toISOString();
+    saveAero(db);
+    res.redirect("/admin/aero");
+  } catch (e) {
+    console.error(e);
+    res.status(500).send("Impossible de révoquer le token.");
+  }
+});
+
+// AERO_TOKEN_API_V1 : activation publique de l'application
+app.post("/api/aero/activate", (req, res) => {
+  res.set("Cache-Control", "no-store");
+
+  if (process.env.NODE_ENV === "production" &&
+      req.headers["x-forwarded-proto"] !== "https") {
+    return res.status(400).json({ ok: false, error: "HTTPS requis." });
+  }
+
+  const token = String(req.body && req.body.token || "").trim().toUpperCase();
+  const deviceId = String(req.body && req.body.deviceId || "").trim();
+
+  if (!/^[A-F0-9]{48}$/.test(token) || deviceId.length < 8 || deviceId.length > 128) {
+    return res.status(400).json({ ok: false, error: "Token ou appareil invalide." });
+  }
+
+  try {
+    const db = readAero();
+    const tokenHash = aeroHash(token);
+    const t = db.tokens.find(x => x.tokenHash === tokenHash);
+
+    if (!t) return res.status(404).json({ ok: false, error: "Token inconnu." });
+    if (t.revokedAt) return res.status(403).json({ ok: false, error: "Token révoqué." });
+    if (!t.expiresAt || Date.now() >= t.expiresAt) {
+      return res.status(403).json({ ok: false, error: "Token expiré." });
+    }
+
+    const profile = db.profiles.find(p => p.id === t.profileId);
+    if (!profile) return res.status(404).json({ ok: false, error: "Profil indisponible." });
+
+    if (!Array.isArray(t.devices)) t.devices = [];
+    if (!t.devices.includes(deviceId)) {
+      if (t.devices.length >= t.maxDevices) {
+        return res.status(403).json({ ok: false, error: "Limite d'appareils atteinte." });
+      }
+      t.devices.push(deviceId);
+      saveAero(db);
+    }
+
+    return res.json({
+      ok: true,
+      tokenId: t.id,
+      expiresAt: t.expiresAt,
+      profile: { t: profile.type, name: profile.name, uri: profile.uri }
+    });
+  } catch (e) {
+    console.error("AERO activation :", e);
+    return res.status(500).json({ ok: false, error: "Erreur interne du serveur." });
+  }
+});
+// ================= FIN AERO TUNNEL =================
+
 
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`Panel VPN démarré sur http://127.0.0.1:${PORT}`);
