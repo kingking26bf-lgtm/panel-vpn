@@ -832,7 +832,9 @@ app.get("/admin/aero", requireAdmin, async (req, res) => {
   try { db = await readAero(); }
   catch (error) {
     console.error("ERREUR LECTURE AERO SUPABASE :", error);
-    return res.status(500).send("Erreur de lecture des données AERO.");
+    return res.status(500).send(
+      "Diagnostic AERO : " + String(error.message || error)
+    );
   }
 
   const profileRows = db.profiles.map(p => `
