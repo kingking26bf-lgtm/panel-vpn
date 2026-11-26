@@ -923,8 +923,11 @@ app.get("/admin/aero", requireAdmin, async (req, res) => {
     <label>Host WebSocket / HTTP</label>
     <input id="aeroWsHost" placeholder="Host">
 
-    <label>Path</label>
+    <label>Path (WebSocket / HTTP)</label>
     <input id="aeroPath" placeholder="/">
+
+    <label>Service Name (gRPC)</label>
+    <input id="aeroServiceName" placeholder="Nom du service gRPC">
 
     <label>Fingerprint</label>
     <input id="aeroFingerprint" value="chrome" placeholder="chrome">
@@ -988,9 +991,10 @@ app.get("/admin/aero", requireAdmin, async (req, res) => {
         set("aeroCredential",obj.id);
         set("aeroNetwork",obj.net||"tcp");
         set("aeroSecurity",obj.security||obj.tls||"none");
-        set("aeroSni",obj.sni||obj.host||"");
+        set("aeroSni",obj.sni||"");
         set("aeroWsHost",obj.host||"");
         set("aeroPath",obj.path||"/");
+        set("aeroServiceName",obj.serviceName||(obj.net==="grpc"?(obj.path||""):""));
         set("aeroFingerprint",obj.fp||"chrome");
         set("aeroAlpn",obj.alpn||"");
         set("aeroPublicKey",obj.pbk||"");
@@ -1006,6 +1010,7 @@ app.get("/admin/aero", requireAdmin, async (req, res) => {
         set("aeroSni",u.searchParams.get("sni")||u.searchParams.get("peer")||"");
         set("aeroWsHost",u.searchParams.get("host")||"");
         set("aeroPath",u.searchParams.get("path")||"/");
+        set("aeroServiceName",u.searchParams.get("serviceName")||(u.searchParams.get("type")==="grpc"?(u.searchParams.get("path")||""):""));
         set("aeroFingerprint",u.searchParams.get("fp")||"chrome");
         set("aeroAlpn",u.searchParams.get("alpn")||"");
         set("aeroPublicKey",u.searchParams.get("pbk")||"");
@@ -1040,6 +1045,7 @@ app.get("/admin/aero", requireAdmin, async (req, res) => {
       old.sni=val("aeroSni");
       old.host=val("aeroWsHost");
       old.path=val("aeroPath");
+      old.serviceName=val("aeroServiceName");
       old.fp=val("aeroFingerprint");
       old.alpn=val("aeroAlpn");
       old.pbk=val("aeroPublicKey");
@@ -1059,6 +1065,7 @@ app.get("/admin/aero", requireAdmin, async (req, res) => {
       sni:val("aeroSni"),
       host:val("aeroWsHost"),
       path:val("aeroPath"),
+      serviceName:val("aeroServiceName"),
       fp:val("aeroFingerprint"),
       alpn:val("aeroAlpn"),
       pbk:val("aeroPublicKey"),
