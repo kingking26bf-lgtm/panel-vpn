@@ -830,7 +830,10 @@ function aeroDate(value) {
 app.get("/admin/aero", requireAdmin, async (req, res) => {
   let db;
   try { db = await readAero(); }
-  catch (_) { return res.status(500).send("Erreur de lecture des données AERO."); }
+  catch (error) {
+    console.error("ERREUR LECTURE AERO SUPABASE :", error);
+    return res.status(500).send("Erreur de lecture des données AERO.");
+  }
 
   const profileRows = db.profiles.map(p => `
     <tr>
