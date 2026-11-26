@@ -1000,40 +1000,42 @@ app.get("/admin/aero", requireAdmin, async (req, res) => {
   });
 
   
-document.querySelectorAll(".aero-edit-profile").forEach(function(btn){
-  btn.addEventListener("click", function(){
-    el("aeroProfileId").value = btn.dataset.id || "";
-    el("aeroName").value = btn.dataset.name || "";
-    uri.value = btn.dataset.uri || "";
-    parseLink();
-    el("aeroSaveButton").textContent = "Enregistrer les modifications";
-    form.scrollIntoView({behavior:"smooth", block:"start"});
-  });
+document.addEventListener("click", function(event){
+  var btn = event.target.closest(".aero-edit-profile");
+  if (!btn) return;
+
+  el("aeroProfileId").value = btn.dataset.id || "";
+  el("aeroName").value = btn.dataset.name || "";
+  uri.value = btn.dataset.uri || "";
+  parseLink();
+  el("aeroSaveButton").textContent = "Enregistrer les modifications";
+  form.scrollIntoView({behavior:"smooth", block:"start"});
 });
 
 
-document.querySelectorAll(".aero-copy-profile").forEach(function(btn){
-  btn.addEventListener("click", async function(){
-    var link = btn.dataset.uri || "";
-    try {
-      if(navigator.clipboard && window.isSecureContext){
-        await navigator.clipboard.writeText(link);
-      } else {
-        var area=document.createElement("textarea");
-        area.value=link;
-        document.body.appendChild(area);
-        area.select();
-        var ok=document.execCommand("copy");
-        area.remove();
-        if(!ok) throw new Error("Copie impossible");
-      }
-      var old=btn.textContent;
-      btn.textContent="Lien copié !";
-      setTimeout(function(){btn.textContent=old;},1800);
-    } catch(e) {
-      alert("Impossible de copier le lien.");
+document.addEventListener("click", async function(event){
+  var btn = event.target.closest(".aero-copy-profile");
+  if (!btn) return;
+
+  var link = btn.dataset.uri || "";
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(link);
+    } else {
+      var area = document.createElement("textarea");
+      area.value = link;
+      document.body.appendChild(area);
+      area.select();
+      var ok = document.execCommand("copy");
+      area.remove();
+      if (!ok) throw new Error("Copie impossible");
     }
-  });
+    var old = btn.textContent;
+    btn.textContent = "Lien copié !";
+    setTimeout(function(){ btn.textContent = old; }, 1800);
+  } catch(e) {
+    alert("Impossible de copier le lien.");
+  }
 });
 
 el("aeroNewProfile").addEventListener("click", function(){
