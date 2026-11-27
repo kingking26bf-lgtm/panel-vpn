@@ -826,6 +826,14 @@ function aeroDate(value) {
   return Number.isNaN(d.getTime()) ? "—" : d.toLocaleString("fr-FR");
 }
 
+function aeroBytes(value) {
+    const n = Math.max(0, Number(value) || 0);
+    if (n < 1024) return n + " B";
+    if (n < 1024 * 1024) return (n / 1024).toFixed(1) + " Ko";
+    if (n < 1024 ** 3) return (n / 1024 ** 2).toFixed(1) + " Mo";
+    return (n / 1024 ** 3).toFixed(2) + " Go";
+}
+
 // Administration AERO : profils et tokens
 app.get("/admin/aero", requireAdmin, async (req, res) => {
   let db;
@@ -853,18 +861,24 @@ app.get("/admin/aero", requireAdmin, async (req, res) => {
     const profile = db.profiles.find(p => p.id === t.profileId);
     const expired = t.expiresAt && Date.now() >= t.expiresAt;
     const state = t.revokedAt ? "Révoqué" : expired ? "Expiré" : "Actif";
+    const usage = t.usage || {};
+    const uploaded = Number(usage.uploaded) || 0;
+    const downloaded = Number(usage.downloaded) || 0;
     return `<tr>
-      <td>${esc(t.id.slice(0, 8))}</td>
-      <td>${esc(profile ? profile.name : "Profil supprimé")}</td>
-      <td>${esc(state)}</td>
-      <td>${esc(aeroDate(t.expiresAt))}</td>
-      <td>${(t.devices || []).length} / ${esc(t.maxDevices)}</td>
-      <td>${t.revokedAt ? "—" : `<form method="POST" action="/admin/aero/revoke">
-        <input type="hidden" name="id" value="${esc(t.id)}">
-        <button type="submit">Révoquer</button>
-      </form>`}</td>
+        <td>${esc(t.id.slice(0, 8))}</td>
+        <td>${esc(profile ? profile.name : "Profil supprimé")}</td>
+        <td>${esc(state)}</td>
+        <td>${esc(aeroDate(t.expiresAt))}</td>
+        <td>${(t.devices || []).length} / ${esc(t.maxDevices)}</td>
+        <td>${esc(aeroBytes(uploaded))}</td>
+        <td>${esc(aeroBytes(downloaded))}</td>
+        <td>${esc(aeroBytes(uploaded + downloaded))}</td>
+        <td>${t.revokedAt ? "—" : `<form method="POST" action="/admin/aero/revoke">
+            <input type="hidden" name="id" value="${esc(t.id)}">
+            <button type="submit">Révoquer</button>
+        </form>`}</td>
     </tr>`;
-  }).join("");
+}).join("");
 
   const options = db.profiles.map(p =>
     `<option value="${esc(p.id)}">${esc(p.name)} (${esc(p.type.toUpperCase())})</option>`
@@ -1162,8 +1176,8 @@ app.get("/admin/aero", requireAdmin, async (req, res) => {
     <section class="card">
       <h2>Tokens générés (${db.tokens.length})</h2>
       <div class="table-wrap"><table>
-        <thead><tr><th>Identifiant</th><th>Profil</th><th>État</th><th>Expiration</th><th>Appareils</th><th>Action</th></tr></thead>
-        <tbody>${tokenRows || '<tr><td colspan="6">Aucun token.</td></tr>'}</tbody>
+        <thead><tr><th>Identifiant</th><th>Profil</th><th>État</th><th>Expiration</th><th>Appareils</th><th>Envoyé</th><th>Reçu</th><th>Total</th><th>Action</th></tr></thead>
+        <tbody>${tokenRows || '<tr><td colspan="9">Aucun token.</td></tr>'}</tbody>
       </table></div>
       <p class="muted">Le code secret complet n'est jamais affiché dans cette liste.</p>
     </section>
@@ -1302,25 +1316,105 @@ app.post("/api/aero/activate", async (req, res) => {
     if (!profile) return res.status(404).json({ ok: false, error: "Profil indisponible." });
 
     if (!Array.isArray(t.devices)) t.devices = [];
-    if (!t.devices.includes(deviceId)) {
-      if (t.devices.length >= t.maxDevices) {
-        return res.status(403).json({ ok: false, error: "Limite d'appareils atteinte." });
-      }
-      t.devices.push(deviceId);
-      await saveAero(db);
-    }
-
-    return res.json({
-      ok: true,
-      tokenId: t.id,
-      expiresAt: t.expiresAt,
-      profile: { t: profile.type, name: profile.name, uri: profile.uri }
-    });
+        if (!t.deviceReports || typeof t.deviceReports !== "object") t.deviceReports = {};
+        if (!t.devices.includes(deviceId)) {
+            if (t.devices.length >= t.maxDevices) {
+                return res.status(403).json({ ok: false, error: "Limite d'appareils atteinte." });
+            }
+            t.devices.push(deviceId);
+        }
+        if (!t.deviceReports[deviceId]) {
+            const reportSecret = crypto.randomBytes(32).toString("hex");
+            t.deviceReports[deviceId] = {
+                secretHash: aeroHash(reportSecret),
+                sessions: {}
+            };
+            await saveAero(db);
+            return res.json({
+                ok: true,
+                tokenId: t.id,
+                expiresAt: t.expiresAt,
+                reportSecret,
+                profile: { t: profile.type, name: profile.name, uri: profile.uri }
+            });
+        }
+        const reportSecret = crypto.randomBytes(32).toString("hex");
+        t.deviceReports[deviceId].secretHash = aeroHash(reportSecret);
+        if (!t.deviceReports[deviceId].sessions) t.deviceReports[deviceId].sessions = {};
+        await saveAero(db);
+        return res.json({
+            ok: true,
+            tokenId: t.id,
+            expiresAt: t.expiresAt,
+            reportSecret,
+            profile: { t: profile.type, name: profile.name, uri: profile.uri }
+        });
   } catch (e) {
     console.error("AERO activation :", e);
     return res.status(500).json({ ok: false, error: "Erreur interne du serveur." });
   }
 });
+
+// Rapports de consommation envoyés par AERO TUNNEL
+app.post("/api/aero/usage", async (req, res) => {
+    res.set("Cache-Control", "no-store");
+    try {
+        const body = req.body || {};
+        const tokenId = String(body.tokenId || "");
+        const deviceId = String(body.deviceId || "");
+        const sessionId = String(body.sessionId || "");
+        const secret = String((req.headers.authorization || "").replace(/^Bearer\s+/i, ""));
+        const uploaded = Number(body.uploaded);
+        const downloaded = Number(body.downloaded);
+
+        if (!tokenId || tokenId.length > 128 ||
+            !deviceId || deviceId.length > 128 ||
+            !/^[A-Fa-f0-9-]{16,64}$/.test(sessionId) ||
+            !/^[a-f0-9]{64}$/i.test(secret) ||
+            !Number.isSafeInteger(uploaded) || uploaded < 0 ||
+            !Number.isSafeInteger(downloaded) || downloaded < 0) {
+            return res.status(400).json({ ok: false, error: "Rapport invalide." });
+        }
+
+        const db = await readAero();
+        const t = db.tokens.find(x => x.id === tokenId);
+        if (!t || t.revokedAt || !t.expiresAt || Date.now() >= t.expiresAt) {
+            return res.status(403).json({ ok: false, error: "Token indisponible." });
+        }
+        const device = t.deviceReports && t.deviceReports[deviceId];
+        if (!device || !device.secretHash ||
+            !crypto.timingSafeEqual(
+                Buffer.from(aeroHash(secret), "hex"),
+                Buffer.from(device.secretHash, "hex")
+            )) {
+            return res.status(403).json({ ok: false, error: "Appareil non autorisé." });
+        }
+
+        if (!device.sessions) device.sessions = {};
+        const previous = device.sessions[sessionId] || { uploaded: 0, downloaded: 0 };
+        const oldUp = Number(previous.uploaded) || 0;
+        const oldDown = Number(previous.downloaded) || 0;
+        const addUp = Math.max(0, uploaded - oldUp);
+        const addDown = Math.max(0, downloaded - oldDown);
+
+        device.sessions[sessionId] = {
+            uploaded: Math.max(oldUp, uploaded),
+            downloaded: Math.max(oldDown, downloaded),
+            updatedAt: new Date().toISOString()
+        };
+        t.usage = t.usage || { uploaded: 0, downloaded: 0 };
+        t.usage.uploaded = (Number(t.usage.uploaded) || 0) + addUp;
+        t.usage.downloaded = (Number(t.usage.downloaded) || 0) + addDown;
+        t.usage.updatedAt = new Date().toISOString();
+
+        await saveAero(db);
+        return res.json({ ok: true });
+    } catch (e) {
+        console.error("AERO usage :", e);
+        return res.status(500).json({ ok: false, error: "Erreur interne." });
+    }
+});
+
 // ================= FIN AERO TUNNEL =================
 
 
